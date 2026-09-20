@@ -19,9 +19,10 @@ from google import genai
 # ── Config ──────────────────────────────────────────────────
 GEMINI_API_KEY = ""
 TELEGRAM_API_ID = 31502565
-TELEGRAM_API_HASH = ""            
+TELEGRAM_API_HASH = ""
+TELEGRAM_TARGET = "+2348100768563"            
 DB_PATH = os.path.join(os.path.dirname(__file__), "dcrypt", "src", "bot_state.db")
-REPORT_INTERVAL = 3600            # seconds (1 hour)
+REPORT_INTERVAL = 216000            # seconds (1 hour)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,7 +97,7 @@ def query_confidence(conn: sqlite3.Connection, since: float) -> list[dict]:
 
 
 def query_recent_trades(conn: sqlite3.Connection, since: float) -> list[dict]:
-    """Recent trade actions."""
+    """Recent trade actions (for hourly report, keeps LIMIT 20)."""
     rows = conn.execute("""
         SELECT symbol, strategy, action, ROUND(sol_amount, 4) as sol,
                ROUND(pnl_sol, 4) as pnl, ROUND(pnl_pct, 1) as pnl_pct,
@@ -107,6 +108,59 @@ def query_recent_trades(conn: sqlite3.Connection, since: float) -> list[dict]:
         LIMIT 20
     """, (since,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def query_session_start(conn: sqlite3.Connection) -> float | None:
+    """Get earliest trade timestamp as session start."""
+    row = conn.execute(
+        "SELECT MIN(timestamp) as ts FROM trades"
+    ).fetchone()
+    return row["ts"] if row and row["ts"] else None
+
+
+def query_all_session_trades(conn: sqlite3.Connection, since: float) -> list[dict]:
+    """All trades in session, no limit."""
+    rows = conn.execute("""
+        SELECT symbol, strategy, action, ROUND(sol_amount, 4) as sol,
+               ROUND(pnl_sol, 4) as pnl, ROUND(pnl_pct, 1) as pnl_pct,
+               reason, tx_signature,
+               datetime(timestamp, 'unixepoch', 'localtime') as time
+        FROM trades
+        WHERE timestamp > ?
+        ORDER BY timestamp ASC
+    """, (since,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def query_session_by_strategy(conn: sqlite3.Connection, since: float) -> list[dict]:
+    """Per-strategy performance breakdown for the session."""
+    rows = conn.execute("""
+        SELECT strategy,
+               COUNT(*) as total,
+               SUM(CASE WHEN action = 'sell' THEN 1 ELSE 0 END) as sells,
+               SUM(CASE WHEN action = 'sell' AND pnl_sol > 0 THEN 1 ELSE 0 END) as wins,
+               SUM(CASE WHEN action = 'sell' AND pnl_sol <= 0 THEN 1 ELSE 0 END) as losses,
+               ROUND(COALESCE(SUM(CASE WHEN action = 'sell' THEN pnl_sol ELSE 0 END), 0), 4) as total_pnl,
+               ROUND(COALESCE(AVG(CASE WHEN action = 'sell' THEN pnl_pct END), 0), 1) as avg_pnl_pct
+        FROM trades
+        WHERE timestamp > ?
+        GROUP BY strategy
+        ORDER BY total_pnl DESC
+    """, (since,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def query_session_overview(conn: sqlite3.Connection, since: float) -> dict:
+    """Session-level summary stats."""
+    row = conn.execute("""
+        SELECT COUNT(*) as total_trades,
+               SUM(CASE WHEN action = 'sell' THEN 1 ELSE 0 END) as sells,
+               SUM(CASE WHEN action = 'sell' AND pnl_sol > 0 THEN 1 ELSE 0 END) as wins,
+               ROUND(COALESCE(SUM(CASE WHEN action = 'sell' THEN pnl_sol ELSE 0 END), 0), 4) as total_pnl
+        FROM trades
+        WHERE timestamp > ?
+    """, (since,)).fetchone()
+    return dict(row) if row else {"total_trades": 0, "sells": 0, "wins": 0, "total_pnl": 0}
 
 
 def query_open_positions(conn: sqlite3.Connection) -> list[dict]:
@@ -224,6 +278,7 @@ SYSTEM_PROMPT = """You are a crypto memecoin trading analyst. You receive raw ho
 trading data from a Solana memecoin bot. Summarize it into a concise,
 actionable report.
 
+
 Include:
 1. Overall performance summary (one line)
 2. Which signal sources performed best and worst
@@ -276,7 +331,7 @@ async def send_telegram(text: str):
 
     for i, chunk in enumerate(chunks):
         try:
-            await tg_client.send_message('me', chunk)
+            await tg_client.send_message(TELEGRAM_TARGET, chunk)
             log.info(f"Telegram sent ({i+1}/{len(chunks)}, {len(chunk)} chars)")
         except Exception as e:
             log.error(f"Telegram send failed: {e}")
@@ -318,9 +373,97 @@ async def handle_ping(event):
 
 
 async def handle_dump(event):
-    data = collect_data(hours_back=8760)
-    header = f"Dcrypt Full Dump — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{'='*40}\n"
-    await send_telegram(header + data)
+    """Send detailed session dump with all trades."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except Exception as e:
+        await send_telegram(f"ERROR: Could not open database: {e}")
+        return
+
+    session_start = query_session_start(conn)
+    if not session_start:
+        await send_telegram("No trades found in database.")
+        conn.close()
+        return
+
+    now = time.time()
+    session_hours = (now - session_start) / 3600
+    h, rem = divmod(int(session_hours * 3600), 3600)
+    m, _ = divmod(rem, 60)
+    duration_str = f"{h}h {m}m" if h > 0 else f"{m}m"
+
+    parts = []
+    parts.append(f"Dcrypt Session Dump — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    parts.append(f"Session: {duration_str} | Since: {datetime.fromtimestamp(session_start).strftime('%Y-%m-%d %H:%M')}")
+    parts.append("=" * 40)
+
+    # 1. Session overview
+    overview = query_session_overview(conn, session_start)
+    win_rate = round(overview["wins"] / overview["sells"] * 100) if overview["sells"] > 0 else 0
+    parts.append(f"\n=== SESSION OVERVIEW ===")
+    parts.append(f"  Duration: {duration_str}")
+    parts.append(f"  Total trades: {overview['total_trades']} | Sells: {overview['sells']} | Win rate: {win_rate}%")
+    parts.append(f"  Total PnL: {overview['total_pnl']:+.4f} SOL")
+
+    # 2. Open positions
+    positions = query_open_positions(conn)
+    parts.append(f"\n  Active positions: {len(positions)}")
+    if positions:
+        total_invested = sum(p["sol"] for p in positions)
+        parts.append(f"  Total invested: {total_invested:.4f} SOL")
+
+    # 3. Performance by strategy
+    strategies = query_session_by_strategy(conn, session_start)
+    if strategies:
+        parts.append(f"\n=== PERFORMANCE BY STRATEGY ===")
+        for s in strategies:
+            wr = round(s["wins"] / s["sells"] * 100) if s["sells"] > 0 else 0
+            parts.append(
+                f"  {s['strategy']:14s} | {s['total']:3d} trades | "
+                f"{wr:3d}% win | {s['total_pnl']:+.4f} SOL | avg {s['avg_pnl_pct']:+.1f}%"
+            )
+
+    # 4. All session trades (no limit)
+    trades = query_all_session_trades(conn, session_start)
+    if trades:
+        parts.append(f"\n=== ALL SESSION TRADES ({len(trades)}) ===")
+        for t in trades:
+            emoji = "+" if (t["pnl"] or 0) >= 0 else ""
+            pnl_str = f"{emoji}{t['pnl']:.4f} ({emoji}{t['pnl_pct']:.1f}%)" if t["action"] == "sell" and t["pnl"] is not None else "--"
+            tx_short = t["tx_signature"][:12] + "..." if t.get("tx_signature") else ""
+            parts.append(
+                f"  {t['time']} | {t['symbol']:10s} | {t['strategy']:12s} | "
+                f"{t['action']:4s} | {t['sol']:.4f} SOL | {pnl_str} | {t['reason']}"
+            )
+    else:
+        parts.append(f"\n=== ALL SESSION TRADES === (none)")
+
+    # 5. Open positions detail
+    if positions:
+        parts.append(f"\n=== OPEN POSITIONS ===")
+        for p in positions:
+            held = p["held_min"]
+            if held >= 60:
+                held_str = f"{held/60:.1f}h"
+            else:
+                held_str = f"{held:.0f}m"
+            parts.append(
+                f"  {p['symbol']:10s} | {p['strategy']:12s} | "
+                f"{p['sol']:.4f} SOL | held {held_str}"
+            )
+
+    # 6. Daily P&L
+    daily = query_daily_pnl(conn)
+    parts.append(f"\n=== DAILY P&L ===")
+    parts.append(f"  Total: {daily['total_pnl']:+.4f} SOL from {daily['trades']} sells")
+
+    conn.close()
+
+    header = "\n".join(parts)
+
+    # Split if too long for one Telegram message
+    await send_telegram(header)
 
 
 # ── Main Loop ──────────────────────────────────────────────
