@@ -25,3 +25,22 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "dcrypt", "src", "bot_state.db
 REPORT_INTERVAL = 216000            # seconds (1 hour)
 
 logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("summary")
+START_TIME = time.time()
+
+tg_client = TelegramClient(
+    "summary_session",
+    TELEGRAM_API_ID,
+    TELEGRAM_API_HASH,
+    auto_reconnect=True,
+    retry_delay=5,
+    request_retries=100000,
+    connection_retries=100000,
+) if TELEGRAM_API_ID and TELEGRAM_API_HASH else None
+
+
+# ── Database Queries ──────────────────────────────────
