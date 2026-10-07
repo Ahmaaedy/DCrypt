@@ -40,6 +40,16 @@ def _setup_log_capture():
 
 _setup_log_capture()
 
+# ZeroGPU Spaces require at least one @spaces.GPU-decorated function to boot.
+try:
+    import spaces
+
+    @spaces.GPU
+    def _noop():
+        return None
+except Exception:
+    pass
+
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
 HERE = os.path.dirname(os.path.abspath(__file__))
 VARIANTS = [
