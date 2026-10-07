@@ -36,7 +36,7 @@ def build(s: Settings, db: Database):
     return repo, prices, positions, pipeline
 
 
-async def run(s: Settings) -> None:
+async def run(s: Settings, stop_event=None) -> None:
     db = Database(s.db_url)
     await db.init()
     repo, prices, positions, pipeline = build(s, db)
@@ -48,8 +48,13 @@ async def run(s: Settings) -> None:
              asyncio.create_task(SnapshotWorker(s, repo, prices).run()),
              *[asyncio.create_task(pipeline.worker(queue)) for _ in range(s.workers)]]
     try:
-        await asyncio.gather(*tasks)
+        if stop_event is None:
+            await asyncio.gather(*tasks)
+        else:
+            await asyncio.to_thread(stop_event.wait)
+            log.info("stop requested")
     finally:
         for t in tasks:
             t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await db.close()
