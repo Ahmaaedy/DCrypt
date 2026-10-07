@@ -135,6 +135,9 @@ def build_ui():
     return blocks
 
 
+demo = build_ui()
+
+
 def main() -> None:
     if not DRY_RUN:
         tg_required = ["TG_API_ID", "TG_API_HASH", "TG_CHANNELS"]
@@ -145,7 +148,7 @@ def main() -> None:
             t = threading.Thread(target=_run_variant, args=(pkg, pkg, db_url), daemon=True)
             t.start()
             log.info("started variant %s", variant)
-    build_ui().launch()
+    demo.launch()
 
 
 if __name__ == "__main__":
