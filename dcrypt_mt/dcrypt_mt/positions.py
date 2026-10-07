@@ -60,6 +60,16 @@ class PositionManager:
                                f"@ {fill.price_native:.3e} (slip {fill.slippage_bps:.0f}bps)")
         return pid
 
+    async def force_sell(self, mint: str, fraction: float = 1.0, reason: str = "manual_telegram") -> str:
+        positions = await self.repo.open_positions()
+        target = next((p for p in positions if p.mint.startswith(mint)), None)
+        if target is None:
+            return "position not found (already closed?)"
+        sol_usd = await self.prices.sol_usd()
+        info = await self.prices.get_token(target.mint)
+        await self._exit(target, fraction, reason, info, sol_usd)
+        return f"sell {fraction:.0%} requested for {target.symbol or target.mint[:8]}"
+
     async def tick(self) -> None:
         positions = await self.repo.open_positions()
         if not positions:

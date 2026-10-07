@@ -59,6 +59,7 @@ VARIANTS = [
 
 # ── Bot lifecycle state ──────────────────────────────────────
 _threads: dict[str, threading.Thread] = {}
+_tg_tokens_used: set[str] = set()
 _stops: dict[str, threading.Event] = {}
 _status: dict[str, str] = {v: "stopped" for v, _, _ in VARIANTS}
 _config_errors: list[str] = []
@@ -88,7 +89,22 @@ def _run_variant(variant: str, variant_pkg: str, db_url: str, stop_event: thread
     async def main():
         app = _load(variant_pkg + ".app", variant_pkg)
         s = _settings(variant_pkg, db_url)
-        await app.run(s, stop_event=stop_event)
+
+        def _ready(repo, prices, positions, pipeline):
+            global _tg_tokens_used
+            chat = os.environ.get("NOTIFY_CHAT_ID", "")
+            token = os.environ.get(f"NOTIFY_BOT_TOKEN_{variant.upper()}") or os.environ.get("NOTIFY_BOT_TOKEN", "")
+            if not (token and chat) or DRY_RUN:
+                return
+            if token in _tg_tokens_used:
+                log.warning("NOTIFY_BOT_TOKEN shared between variants; skipping extra TG UI for %s", variant)
+                return
+            _tg_tokens_used.add(token)
+            from telegram_ui import start_telegram_ui
+            loop = asyncio.get_running_loop()
+            start_telegram_ui(variant, s, positions, loop, chat, token)
+
+        await app.run(s, stop_event=stop_event, on_ready=_ready)
 
     try:
         asyncio.run(main())

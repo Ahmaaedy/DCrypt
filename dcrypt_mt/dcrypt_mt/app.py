@@ -42,10 +42,12 @@ def build(s: Settings, db: Database):
     return repo, prices, positions, pipeline
 
 
-async def run(s: Settings, stop_event=None) -> None:
+async def run(s: Settings, stop_event=None, on_ready=None) -> None:
     db = Database(s.db_url)
     await db.init()
     repo, prices, positions, pipeline = build(s, db)
+    if on_ready is not None:
+        on_ready(repo, prices, positions, pipeline)
     queue: asyncio.Queue = asyncio.Queue(maxsize=s.queue_size)
     ingest = TelegramIngest(s, queue)
     log.info("starting in %s mode", s.mode.upper())
