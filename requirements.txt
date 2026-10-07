@@ -5,4 +5,4 @@ pydantic-settings>=2.2
 sqlalchemy[asyncio]>=2.0
 aiosqlite>=0.20
 base58>=2.1
-gradio>=5.0
+gradio>=6.28.0
