@@ -17,8 +17,6 @@ import sqlite3
 import sys
 import threading
 
-os.environ.setdefault("GRADIO_SSR_MODE", "disabled")
-
 log = logging.getLogger("dcrypt")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 _log_lines: collections.deque = collections.deque(maxlen=150)
@@ -236,7 +234,7 @@ def main() -> None:
         else:
             for variant, pkg, db_url in VARIANTS:
                 start_variant(variant, pkg, db_url)
-    demo.launch()
+    demo.launch(ssr_mode=False)
 
 
 if __name__ == "__main__":
